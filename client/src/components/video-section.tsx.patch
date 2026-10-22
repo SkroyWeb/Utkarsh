@@ -1,0 +1,18 @@
+--- Utkarsh-main/client/src/components/video-section.tsx	2026-10-19 08:12:18.000000000 +0000
++++ /home/claude/mine/Utkarsh-main/client/src/components/video-section.tsx	2026-10-19 08:26:36.959405331 +0000
+@@ -114,10 +114,13 @@
+                     <span className="material-icons text-sm mr-1">share</span>
+                     Share
+                   </button>
++                  {/* The lesson is an interactive HTML page, so it downloads as a
++                      self-contained .html you can open and play offline. */}
+                   <a 
+-                    href={currentVideo.videoUrl}
+-                    download={`${currentVideo.title.replace(/\s+/g, '_')}.mp4`}
++                    href={`${currentVideo.videoUrl}?download=1`}
++                    download={`${currentVideo.title.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'lesson'}.html`}
+                     className="bg-primary hover:bg-primary/90 px-4 py-2 rounded-lg text-white flex items-center text-sm transition-colors"
++                    title="Download as a playable lesson file (.html)"
+                   >
+                     <span className="material-icons text-sm mr-1">download</span>
+                     Download

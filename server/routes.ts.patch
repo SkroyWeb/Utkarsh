@@ -1,0 +1,859 @@
+--- Utkarsh-main/server/routes.ts	2026-10-19 08:12:18.000000000 +0000
++++ /home/claude/mine/Utkarsh-main/server/routes.ts	2026-10-19 08:26:36.956544891 +0000
+@@ -200,7 +200,7 @@
+        const lesson = generatedLessons.get(videoId) || await buildLesson(searchQuery);
+        const script = lesson.script;
+        const timelineDuration = Math.max(
+-         120,
++         20,
+          Math.ceil(script.split(/\s+/).filter(Boolean).length / 2.5),
+        );
+       
+@@ -517,6 +517,17 @@
+             ${whiteboardCss}
+             ${characterCss}
+             ${avatarMotionCss}
++            /* One consistent control surface: the themed pill plus a seekable
++               timeline, both inside the lesson, so it looks and works the same
++               in the app, in fullscreen and in a downloaded copy. */
++            .timeline-controls {
++              display: flex !important;
++              position: absolute;
++              left: 20px; right: 20px; bottom: 0; height: 14px;
++              align-items: center; gap: 10px; z-index: 50;
++              font: 700 11px/1 'Nunito','Segoe UI',sans-serif; color: #10205C;
++            }
++            .timeline-controls input { height: 12px; margin: 0; }
+           </style>
+         </head>
+         <body>
+@@ -852,6 +863,11 @@
+                   </svg>
+                 </button>
+                 <button class="control-btn cc-btn" id="cc-btn" title="Captions on/off" aria-pressed="true">CC</button>
++                <button class="control-btn" id="fs-btn" title="Fullscreen" aria-label="Fullscreen">
++                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
++                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
++                  </svg>
++                </button>
+               </div>
+               
+               <!-- Settings panel -->
+@@ -878,9 +894,10 @@
+                   <div class="settings-item">
+                     <span class="settings-label">Speed:</span>
+                     <select id="speed-select" class="settings-value">
+-                      <option value="0.8">Slow</option>
+-                      <option value="1" selected>Normal</option>
+-                      <option value="1.2">Fast</option>
++                      <option value="0.75">Slow (0.75x)</option>
++                      <option value="1" selected>Normal (1x)</option>
++                      <option value="1.25">Fast (1.25x)</option>
++                      <option value="1.5">Faster (1.5x)</option>
+                     </select>
+                   </div>
+                 </div>
+@@ -1014,129 +1031,232 @@
+ 
+             let currentSentence = 0;
+             let playing = false;
+-             let activeCaption = -1;
+-             let playbackElapsed = 0;
+-             let playbackStartedAt = 0;
+-             let timelineTimer = null;
+-             let playbackToken = 0;
+-             const TIMELINE_DURATION = ${timelineDuration};
+-             const timeline = document.getElementById('timeline');
+-             const timelineTime = document.getElementById('timeline-time');
++            let activeCaption = -1;
++            let playbackToken = 0;
++            let timelineTimer = null;
++            let muted = false;
++            let pendingResume = false;
++            let scrubTimer = null;
++            let activeUtterance = null; // hold a reference so browsers do not garbage-collect it mid-speech
++            const SCRIPT_LEN = Math.max(1, script.length);
++            const BASE_DURATION = ${timelineDuration};
++            const EMBEDDED = window.parent !== window;
++            if (EMBEDDED) document.body.classList.add('embedded');
+ 
+-             function clampTimelineTime(time) {
+-               return Math.max(0, Math.min(TIMELINE_DURATION, Number(time) || 0));
+-             }
++            // Playback state is character based: posChar is how much of the script
++            // has been spoken. The timeline, pause/resume and seeking all derive
++            // from it, so they stay correct at every speech rate.
++            let posChar = 0;        // last position confirmed by the speech engine
++            let posStamp = 0;       // performance.now() when posChar was confirmed
++            let chunkEndChar = 0;   // end of the chunk currently being spoken
++            let voiceRate = 1;      // per-teacher multiplier on the user's speed
++            // Characters spoken per second at rate 1.0. Starts as an estimate and
++            // self-calibrates from the real voice after each spoken chunk.
++            let cpsBase = Math.min(40, Math.max(5, SCRIPT_LEN / BASE_DURATION));
+ 
+-             function formatTimelineTime(time) {
+-               const rounded = Math.floor(clampTimelineTime(time));
+-               const minutes = Math.floor(rounded / 60);
+-               const seconds = rounded % 60;
+-               return minutes + ':' + String(seconds).padStart(2, "0");
+-             }
++            const timeline = document.getElementById('timeline');
++            const timelineTime = document.getElementById('timeline-time');
+ 
+-             function getTimelineTime() {
+-               if (!playing) return playbackElapsed;
+-               return clampTimelineTime(
+-                 playbackElapsed + (performance.now() - playbackStartedAt) / 1000,
+-               );
+-             }
++            // Speak sentence-sized chunks instead of one huge utterance. Long
++            // utterances are cut off by Chrome after ~15s and cannot be paused
++            // reliably, which is what broke play/pause.
++            const speechChunks = [];
++            (function buildChunks() {
++              const MAX = 200;
++              const base = captionSegments.length ? captionSegments : [{ start: 0, end: script.length }];
++              base.forEach(function (seg) {
++                let s = seg.start;
++                while (seg.end - s > MAX) {
++                  let cut = script.lastIndexOf(' ', s + MAX);
++                  const comma = Math.max(script.lastIndexOf(',', s + MAX), script.lastIndexOf(';', s + MAX));
++                  if (comma > s + 80) cut = comma + 1;
++                  if (cut <= s + 40) cut = s + MAX;
++                  speechChunks.push({ start: s, end: cut });
++                  s = cut;
++                }
++                if (seg.end > s) speechChunks.push({ start: s, end: seg.end });
++              });
++            })();
+ 
+-             function updateTimeline(time = getTimelineTime()) {
+-               const nextTime = clampTimelineTime(time);
+-               timeline.value = String(nextTime);
+-               timelineTime.textContent = formatTimelineTime(nextTime) + ' / ' + formatTimelineTime(TIMELINE_DURATION);
+-               updateVisualProgress(nextTime);
+-               if (window.parent !== window) {
+-                 window.parent.postMessage({
+-                   source: 'ai-teacher-video',
+-                   type: 'timeupdate',
+-                   currentTime: nextTime,
+-                   duration: TIMELINE_DURATION,
+-                   playing,
+-                 }, '*');
+-               }
+-             }
++            function chunkIndexAt(c) {
++              for (let i = 0; i < speechChunks.length; i++) {
++                if (c < speechChunks[i].end) return i;
++              }
++              return speechChunks.length;
++            }
+ 
+-             function stopTimelineClock() {
+-               if (timelineTimer !== null) {
+-                 clearInterval(timelineTimer);
+-                 timelineTimer = null;
+-               }
+-             }
++            function userSpeed() {
++              const v = parseFloat(speedSelect.value);
++              return isFinite(v) && v > 0 ? v : 1;
++            }
++            function refreshVoiceRate() {
++              try {
++                if (window.pickSpeechVoice) voiceRate = window.pickSpeechVoice().rate || 1;
++              } catch (e) { /* keep the previous value */ }
++            }
++            function totalRate() {
++              return Math.min(2.5, Math.max(0.4, userSpeed() * voiceRate));
++            }
++            function getDuration() {
++              return SCRIPT_LEN / (cpsBase * totalRate());
++            }
++            function clampChar(c) {
++              return Math.max(0, Math.min(SCRIPT_LEN, Number(c) || 0));
++            }
++            function getPosChar() {
++              if (!playing) return posChar;
++              const est = posChar + ((performance.now() - posStamp) / 1000) * cpsBase * totalRate();
++              // never run ahead of the sentence currently being spoken
++              return Math.min(est, Math.max(posChar, chunkEndChar - 1));
++            }
++            function charToTime(c) { return (clampChar(c) / SCRIPT_LEN) * getDuration(); }
++            function timeToChar(t) {
++              const d = getDuration();
++              return Math.round(Math.max(0, Math.min(1, (Number(t) || 0) / d)) * SCRIPT_LEN);
++            }
++            function getTimelineTime() { return charToTime(getPosChar()); }
+ 
+-             function startTimelineClock() {
+-               stopTimelineClock();
+-               playbackStartedAt = performance.now();
+-               timelineTimer = setInterval(() => {
+-                 const nextTime = getTimelineTime();
+-                 if (nextTime >= TIMELINE_DURATION) {
+-                   endPresentation();
+-                   return;
+-                 }
+-                 updateTimeline(nextTime);
+-               }, 200);
+-               updateTimeline(playbackElapsed);
+-             }
++            function formatTimelineTime(time) {
++              const rounded = Math.max(0, Math.floor(time));
++              return Math.floor(rounded / 60) + ':' + String(rounded % 60).padStart(2, '0');
++            }
++            function captionsOn() { return !document.body.classList.contains('cc-off'); }
+ 
+-             function updateVisualProgress(time) {
+-               // Fallback for voices that never fire speech boundary events
+-               // (some browsers' network voices): estimate from the clock.
+-               if (playing && performance.now() - window.__lastBoardSyncAt > 2500) {
+-                 showBeatAt(Math.floor((clampTimelineTime(time) / TIMELINE_DURATION) * script.length));
+-               }
+-             }
+-            
+-            // Pre-generate audio for reliable playback
+-            let audioContext;
+-            let audioBuffers = [];
+-            let currentAudioSource = null;
+-            
+-            // Create synthetic voice using Web Speech API
+-             function generateSpeech(startCharIndex = 0) {
+-              return new Promise((resolve) => {
+-                 const utterance = new SpeechSynthesisUtterance(script.slice(startCharIndex));
+-                const voiceChoice = pickSpeechVoice();
+-                utterance.rate = parseFloat(speedSelect.value) * voiceChoice.rate;
+-                utterance.pitch = voiceChoice.pitch;
+-                utterance.volume = 1;
+-                if (voiceChoice.voice) {
+-                  try { utterance.voice = voiceChoice.voice; } catch (e) { /* keep the default voice */ }
++            function postState(type, t, dur) {
++              if (!EMBEDDED) return;
++              window.parent.postMessage({
++                source: 'ai-teacher-video',
++                type: type || 'timeupdate',
++                currentTime: t,
++                duration: dur,
++                playing: playing || pendingResume,
++                speed: userSpeed(),
++                muted: muted,
++                captions: captionsOn(),
++              }, '*');
++            }
++
++            function updateTimeline(type) {
++              if (!playing) refreshVoiceRate();
++              const dur = getDuration();
++              const pc = getPosChar();
++              const t = (pc / SCRIPT_LEN) * dur;
++              timeline.max = String(dur);
++              timeline.value = String(t);
++              timelineTime.textContent = formatTimelineTime(t) + ' / ' + formatTimelineTime(dur);
++              updateVisualProgress(pc);
++              postState(type, t, dur);
++            }
++
++            function stopTimelineClock() {
++              if (timelineTimer !== null) {
++                clearInterval(timelineTimer);
++                timelineTimer = null;
++              }
++            }
++            function startTimelineClock() {
++              stopTimelineClock();
++              timelineTimer = setInterval(function () { updateTimeline(); }, 200);
++              updateTimeline();
++            }
++
++            function updateVisualProgress() {
++              // Fallback for voices that never fire boundary events: keep the
++              // whiteboard moving from the estimated position.
++              if (playing && performance.now() - window.__lastBoardSyncAt > 2500) {
++                showBeatAt(Math.floor(getPosChar()));
++              }
++            }
++
++            function markPos(abs) {
++              posChar = abs;
++              posStamp = performance.now();
++            }
++
++            function calibrate(charCount, seconds) {
++              if (charCount < 25 || seconds < 0.5 || seconds > 60) return;
++              const measured = charCount / seconds / totalRate();
++              cpsBase = Math.min(40, Math.max(5, cpsBase * 0.6 + measured * 0.4));
++            }
++
++            // Speak one chunk. Resolves true when it finished, false when it was
++            // cancelled. Never hangs: a watchdog and an error fallback keep the
++            // lesson moving even when a voice misbehaves.
++            function speakChunk(text, absStart, token, estSeconds) {
++              return new Promise(function (resolve) {
++                let done = false;
++                let watchdog = null;
++                function finish(ok) {
++                  if (done) return;
++                  done = true;
++                  clearTimeout(watchdog);
++                  resolve(ok);
+                 }
+-                
+-                // Speech boundary events expose the character currently being
+-                // spoken. Character ranges are more reliable than sentence
+-                // events, which are not implemented consistently by browsers.
+-                // Initial mouth animation trigger
+-                utterance.onstart = () => {
+-                  document.getElementById('speechStart').beginElement();
+-                   showSubtitleAt(startCharIndex);
++                const mouth = function () {
++                  const el = document.getElementById('speechStart');
++                  if (el && el.beginElement) el.beginElement();
+                 };
+-                
+-                // Keep the visible caption aligned to the spoken word.
+-                utterance.onboundary = (event) => {
+-                  if (event.name === 'word' || typeof event.charIndex === 'number') {
+-                    document.getElementById('speechStart').beginElement();
+-                    if (typeof event.charIndex === 'number' && window.avatarSpeak) {
+-                      window.avatarSpeak(script, startCharIndex + event.charIndex);
+-                    }
+-                    if (typeof event.charIndex === 'number') {
+-                       showSubtitleAt(startCharIndex + event.charIndex);
+-                    }
+-                  }
++                const ss = window.speechSynthesis;
++                if (!ss) {
++                  // No speech support: keep captions and the board moving silently.
++                  showSubtitleAt(absStart);
++                  mouth();
++                  setTimeout(function () { finish(true); }, estSeconds * 1000);
++                  return;
++                }
++
++                const choice = window.pickSpeechVoice ? window.pickSpeechVoice() : { voice: null, pitch: 1, rate: 1 };
++                voiceRate = choice.rate || 1;
++                const u = new SpeechSynthesisUtterance(text);
++                u.rate = Math.min(2, Math.max(0.5, userSpeed() * voiceRate));
++                u.pitch = choice.pitch || 1;
++                u.volume = muted ? 0 : 1;
++                if (choice.voice) {
++                  try {
++                    u.voice = choice.voice;
++                    if (choice.voice.lang) u.lang = choice.voice.lang;
++                  } catch (e) { /* keep the default voice */ }
++                }
++
++                u.onstart = function () {
++                  if (token !== playbackToken) return;
++                  markPos(absStart);
++                  mouth();
++                  showSubtitleAt(absStart);
+                 };
+-                
+-                utterance.onend = () => {
+-                  // Hide subtitles at the end
+-                  subtitles.classList.remove('show');
+-                  resolve(true);
++                u.onboundary = function (event) {
++                  if (token !== playbackToken || typeof event.charIndex !== 'number') return;
++                  const abs = absStart + event.charIndex;
++                  markPos(abs);
++                  mouth();
++                  if (window.avatarSpeak) window.avatarSpeak(script, abs);
++                  showSubtitleAt(abs);
+                 };
+-                
+-                // Speak the text
+-                window.speechSynthesis.speak(utterance);
++                u.onend = function () { finish(true); };
++                u.onerror = function (event) {
++                  const reason = event && event.error;
++                  if (reason === 'canceled' || reason === 'interrupted') {
++                    finish(false);
++                  } else {
++                    // The voice failed: carry on silently for this chunk.
++                    setTimeout(function () { finish(true); }, estSeconds * 1000);
++                  }
++                };
++                watchdog = setTimeout(function () {
++                  // Some engines never fire "end". Only touch the engine if this
++                  // chunk is still the current one.
++                  if (token === playbackToken) {
++                    try { ss.cancel(); } catch (e) { /* ignore */ }
++                  }
++                  finish(true);
++                }, (estSeconds * 2 + 5) * 1000);
++
++                activeUtterance = u;
++                ss.speak(u);
+               });
+             }
+-            
+-            // Display a caption segment by its position in the narration.
++
++// Display a caption segment by its position in the narration.
+             function showSubtitle(index) {
+               if (index < captionSegments.length) {
+                 subtitles.textContent = captionSegments[index].text;
+@@ -1167,247 +1287,244 @@
+               }
+             }
+             
+-            // Play the educational video
+-             async function playEducationalVideo(startTime = playbackElapsed) {
+-               playbackToken += 1;
+-               const currentToken = playbackToken;
+-               playbackElapsed = clampTimelineTime(startTime);
+-               const startCharIndex = Math.floor(
+-                 (playbackElapsed / TIMELINE_DURATION) * script.length,
+-               );
+-              playing = true;
+-              playBtn.classList.add('hidden');
+-              pauseBtn.classList.remove('hidden');
+-              
+-              // Don't show subtitles immediately - they'll appear during speech
+-              currentSentence = 0;
+-              // Subtitles are now hidden by default
+-              
+-              // Start animations
+-               animateProgress(playbackElapsed);
+-               startTimelineClock();
+-              
+-              // Start narration
++            // ---- playback control ---------------------------------------------------
++            function setButtons(isPlaying) {
++              playBtn.classList.toggle('hidden', isPlaying);
++              pauseBtn.classList.toggle('hidden', !isPlaying);
++            }
++
++            function cancelSpeech() {
+               try {
+-                // Use synthetic speech
+-                 await generateSpeech(startCharIndex);
+-                 if (currentToken !== playbackToken) return;
+-                
+-                // End of presentation
+-                endPresentation();
+-              } catch (err) {
+-                console.error('Speech error:', err);
+-                endPresentation();
+-              }
++                if (window.speechSynthesis) {
++                  window.speechSynthesis.cancel();
++                  // clear a stuck "paused" state left behind by some browsers
++                  window.speechSynthesis.resume();
++                }
++              } catch (e) { /* ignore */ }
+             }
+-            
+-            // Function to handle speech synthesis errors
+-            function fallbackToManualSubtitles() {
+-              // Display each subtitle with timing based on length and trigger lip sync
+-              function showNextSubtitle() {
+-                   if (currentSentence < captionSegments.length && playing) {
+-                  showSubtitle(currentSentence);
+-                  
+-                  // Trigger mouth animation with each new sentence
+-                  document.getElementById('speechStart').beginElement();
+-                  
+-                  // Calculate duration based on sentence length (avg reading speed)
+-                   const words = captionSegments[currentSentence].text.split(' ').length;
+-                  const duration = Math.max(2000, words * 300); // Minimum 2 seconds, otherwise 300ms per word
+-                  
+-                  // For longer sentences, trigger additional mouth movements during playback
+-                  if (words > 5) {
+-                    // Add some random mouth movements during the sentence for better animation
+-                    const wordDuration = duration / words;
+-                    for (let i = 1; i < words; i++) {
+-                      setTimeout(() => {
+-                        if (playing) {
+-                          document.getElementById('speechStart').beginElement();
+-                        }
+-                      }, i * wordDuration);
+-                    }
+-                  }
+-                  
+-                  setTimeout(() => {
+-                    currentSentence++;
+-                    showNextSubtitle();
+-                  }, duration);
+-                } else {
+-                  endPresentation();
++
++            // Begin (or continue) narration from a character position.
++            function startNarration(fromChar) {
++              clearTimeout(scrubTimer);
++              pendingResume = false;
++              playbackToken += 1;
++              const token = playbackToken;
++              cancelSpeech();
++              refreshVoiceRate();
++              markPos(clampChar(fromChar));
++              chunkEndChar = posChar;
++              playing = true;
++              setButtons(true);
++              animateProgress();
++              startTimelineClock();
++              // Chrome drops a speak() issued immediately after cancel(), so wait a beat.
++              setTimeout(function () {
++                if (token === playbackToken) runNarration(token);
++              }, 80);
++            }
++
++            async function runNarration(token) {
++              let i = chunkIndexAt(posChar);
++              let retries = 0;
++              while (i < speechChunks.length) {
++                if (token !== playbackToken) return;
++                const chunk = speechChunks[i];
++                const from = Math.max(chunk.start, posChar);
++                if (from >= chunk.end) { i += 1; continue; }
++
++                chunkEndChar = chunk.end;
++                const text = script.slice(from, chunk.end);
++                const estSeconds = Math.max(1.2, text.length / (cpsBase * totalRate()));
++                const startedAt = performance.now();
++                const ok = await speakChunk(text, from, token, estSeconds);
++                if (token !== playbackToken) return;
++
++                if (!ok) {
++                  // Unexpected cancel (not ours): retry this chunk, then move on.
++                  retries += 1;
++                  if (retries > 2) { markPos(chunk.end); i += 1; retries = 0; }
++                  continue;
+                 }
++                retries = 0;
++                calibrate(text.length, (performance.now() - startedAt) / 1000);
++                markPos(chunk.end);
++                i += 1;
+               }
+-              
+-              showNextSubtitle();
++              if (token === playbackToken) endPresentation();
+             }
+-            
+-            // End presentation and reset controls
+-             function endPresentation() {
+-               playbackToken += 1;
++
++            function playFromCurrent() {
++              if (playing) return;
++              startNarration(posChar >= SCRIPT_LEN - 1 ? 0 : posChar);
++            }
++
++            // Pause = stop speaking and remember the position. (speechSynthesis.pause()
++            // is unreliable: it is ignored on Android and sticks on desktop Chrome.)
++            function pauseVideo() {
++              if (!playing) return;
++              clearTimeout(scrubTimer);
++              pendingResume = false;
++              playbackToken += 1;
++              playing = false;
++              stopTimelineClock();
++              cancelSpeech();
++              pauseAllAnimations();
++              setButtons(false);
++              updateTimeline();
++            }
++
++            function resumeVideo() {
++              playFromCurrent();
++            }
++
++            function endPresentation() {
++              clearTimeout(scrubTimer);
++              pendingResume = false;
++              playbackToken += 1;
+               playing = false;
+-               stopTimelineClock();
+-               playbackElapsed = TIMELINE_DURATION;
+-              playBtn.classList.remove('hidden');
+-              pauseBtn.classList.add('hidden');
++              stopTimelineClock();
++              posChar = SCRIPT_LEN;
++              setButtons(false);
+               subtitles.classList.remove('show');
+-              
+-              // Stop all animations when speech ends
+               stopAllAnimations();
+               showBeatAt(script.length);
+-              
+-              // Stop any audio that might be playing
+-              if (currentAudioSource) {
+-                currentAudioSource.stop();
+-              }
+-              window.speechSynthesis.cancel();
+-               updateTimeline(playbackElapsed);
++              cancelSpeech();
++              updateTimeline();
+             }
+-            
+-            // Restart the video
++
+             function restartVideo() {
+-              endPresentation();
+-              setTimeout(() => {
+-                 playbackElapsed = 0;
+-                 updateTimeline(0);
+-                 playEducationalVideo(0);
+-              }, 100);
++              startNarration(0);
+             }
+-            
+-            // Pause the video
+-            function pauseVideo() {
+-               playbackElapsed = getTimelineTime();
+-               stopTimelineClock();
++
++            // Jump to a point on the timeline. While dragging, the voice restarts
++            // only once the slider settles so it does not stutter.
++            function seekVideo(time, resumeAfterSeek) {
++              const shouldResume = (resumeAfterSeek === undefined ? (playing || pendingResume) : Boolean(resumeAfterSeek));
++              const target = timeToChar(time);
++              clearTimeout(scrubTimer);
++              playbackToken += 1;
++              cancelSpeech();
++              stopTimelineClock();
++              stopAllAnimations();
+               playing = false;
+-              playBtn.classList.remove('hidden');
+-              pauseBtn.classList.add('hidden');
+-              
+-              // Pause speech AND animations together
+-              window.speechSynthesis.pause();
+-              pauseAllAnimations();
+-               updateTimeline(playbackElapsed);
++              markPos(target);
++              activeCaption = -1;
++              showSubtitleAt(target);
++
++              if (shouldResume && target < SCRIPT_LEN - 1) {
++                pendingResume = true;
++                updateTimeline();
++                scrubTimer = setTimeout(function () { startNarration(posChar); }, 250);
++              } else {
++                pendingResume = false;
++                setButtons(false);
++                updateTimeline();
++              }
+             }
+-            
+-            // Resume the video
+-            function resumeVideo() {
+-              playing = true;
+-              playBtn.classList.add('hidden');
+-              pauseBtn.classList.remove('hidden');
+-              
+-              // Resume speech AND animations together
+-              window.speechSynthesis.resume();
+-              resumeAllAnimations();
+-               startTimelineClock();
+-             }
+ 
+-             function seekVideo(time, resumeAfterSeek = playing) {
+-               const nextTime = clampTimelineTime(time);
+-               const shouldResume = resumeAfterSeek && nextTime < TIMELINE_DURATION;
+-               playbackToken += 1;
+-               window.speechSynthesis.cancel();
+-               stopTimelineClock();
+-               stopAllAnimations();
+-               playing = false;
+-               playbackElapsed = nextTime;
+-               activeCaption = -1;
+-               showSubtitleAt(Math.floor((nextTime / TIMELINE_DURATION) * script.length));
+-               updateTimeline(nextTime);
+-
+-               if (shouldResume) {
+-                 playEducationalVideo(nextTime);
+-               } else {
+-                 playBtn.classList.remove('hidden');
+-                 pauseBtn.classList.add('hidden');
+-               }
++            // Speed / volume changes take effect right away, from the current word.
++            function applySpeed(value) {
++              const v = Number(value);
++              const exists = Array.prototype.some.call(speedSelect.options, function (o) { return Number(o.value) === v; });
++              if (exists) speedSelect.value = String(v);
++              refreshVoiceRate();
++              if (playing) startNarration(posChar); else updateTimeline();
++            }
++            function setMuted(value) {
++              muted = Boolean(value);
++              if (playing) startNarration(posChar); else updateTimeline();
+             }
+-            
+-            // Settings toggle
++
++            // ---- UI wiring --------------------------------------------------------
+             settingsBtn.addEventListener('click', () => {
+               settingsDropdown.classList.toggle('show');
+             });
+-            
++
+             // Close settings when clicking elsewhere
+             document.addEventListener('click', (e) => {
+               if (!settingsBtn.contains(e.target) && !settingsDropdown.contains(e.target)) {
+                 settingsDropdown.classList.remove('show');
+               }
+             });
+-            
+-            // Voice selection
++
+             voiceSelect.addEventListener('change', () => {
+-              if (playing) {
+-                restartVideo();
+-              }
++              refreshVoiceRate();
++              if (playing) startNarration(posChar); else updateTimeline();
+             });
+-            
+-            // Speed selection
+-            speedSelect.addEventListener('change', () => {
+-              if (playing) {
++            speedSelect.addEventListener('change', () => applySpeed(userSpeed()));
++
++            playBtn.addEventListener('click', playFromCurrent);
++            pauseBtn.addEventListener('click', pauseVideo);
++            restartBtn.addEventListener('click', restartVideo);
++            timeline.addEventListener('input', () => seekVideo(Number(timeline.value)));
++
++            // Fullscreen button for the standalone (downloaded) copy. When embedded,
++            // the host page owns fullscreen so its controls stay visible.
++            const fsBtn = document.getElementById('fs-btn');
++            if (fsBtn) {
++              fsBtn.addEventListener('click', () => {
++                if (EMBEDDED) {
++                  // Ask the host page to fullscreen the whole player; the lesson
++                  // (and these controls) fill it, so nothing disappears.
++                  window.parent.postMessage({ source: 'ai-teacher-video', type: 'toggle-fullscreen' }, '*');
++                } else if (document.fullscreenElement) {
++                  document.exitFullscreen();
++                } else if (document.documentElement.requestFullscreen) {
++                  document.documentElement.requestFullscreen().catch(() => {});
++                }
++              });
++            }
++
++            window.addEventListener('message', (event) => {
++              if (event.source !== window.parent || event.data?.source !== 'ai-teacher-player') {
++                return;
++              }
++              const msg = event.data;
++              if (msg.type === 'play') {
++                playFromCurrent();
++              } else if (msg.type === 'pause') {
++                pauseVideo();
++              } else if (msg.type === 'restart') {
+                 restartVideo();
++              } else if (msg.type === 'seek') {
++                seekVideo(msg.time, Boolean(msg.resume));
++              } else if (msg.type === 'set-speed') {
++                applySpeed(msg.speed);
++              } else if (msg.type === 'set-muted') {
++                setMuted(msg.muted);
++              } else if (msg.type === 'toggle-captions') {
++                const cc = document.getElementById('cc-btn');
++                if (cc) cc.click();
++                updateTimeline('state');
++              } else if (msg.type === 'toggle-settings') {
++                settingsDropdown.classList.toggle('show');
++              } else if (msg.type === 'get-state') {
++                updateTimeline('state');
+               }
+             });
+-            
+-            // Event listeners
+-            playBtn.addEventListener('click', () => {
+-              if (window.speechSynthesis.paused) {
+-                resumeVideo();
+-              } else {
+-                playEducationalVideo();
+-              }
+-            });
+-            
+-            pauseBtn.addEventListener('click', pauseVideo);
+-            restartBtn.addEventListener('click', restartVideo);
+-             timeline.addEventListener('input', () => {
+-               seekVideo(Number(timeline.value), playing);
+-             });
+-
+-             window.addEventListener('message', (event) => {
+-               if (event.source !== window.parent || event.data?.source !== 'ai-teacher-player') {
+-                 return;
+-               }
+ 
+-               if (event.data.type === 'play') {
+-                 if (playing) return;
+-                 if (playbackElapsed >= TIMELINE_DURATION) playbackElapsed = 0;
+-                 playEducationalVideo(playbackElapsed);
+-               } else if (event.data.type === 'pause') {
+-                 if (playing) pauseVideo();
+-               } else if (event.data.type === 'seek') {
+-                 seekVideo(event.data.time, Boolean(event.data.resume));
+-               } else if (event.data.type === 'get-state') {
+-                 updateTimeline(getTimelineTime());
+-               }
+-             });
+-            
+             // Load voice options when they are available
+             if (window.speechSynthesis) {
+               if (window.speechSynthesis.onvoiceschanged !== undefined) {
+-                window.speechSynthesis.onvoiceschanged = () => { populateVoiceList(); };
++                window.speechSynthesis.onvoiceschanged = () => {
++                  populateVoiceList();
++                  refreshVoiceRate();
++                  updateTimeline('state');
++                };
+               }
+-              
+               // Initial population
+-              setTimeout(() => { populateVoiceList(); }, 100);
+-            } else {
+-              // Speech synthesis not supported
+-              alert('Speech synthesis is not supported in your browser. Visual-only mode enabled.');
+-              
+-              // Use fallback mode with just animations and subtitles
+-              playBtn.addEventListener('click', () => {
+-                fallbackToManualSubtitles();
+-              });
++              setTimeout(() => {
++                populateVoiceList();
++                refreshVoiceRate();
++                updateTimeline('state');
++              }, 100);
+             }
+ 
+-             updateTimeline(0);
+-             if (window.parent !== window) {
+-               window.parent.postMessage({
+-                 source: 'ai-teacher-video',
+-                 type: 'ready',
+-                 currentTime: 0,
+-                 duration: TIMELINE_DURATION,
+-                 playing: false,
+-               }, '*');
+-             }
++            refreshVoiceRate();
++            updateTimeline('ready');
++
+             
+-            // Auto-start with a slight delay (can be disabled for better user control)
++// Auto-start with a slight delay (can be disabled for better user control)
+             /* setTimeout(() => {
+               playEducationalVideo();
+             }, 1000); */
+@@ -1416,7 +1533,12 @@
+         </html>
+       `;
+       
+-      res.setHeader('Content-Type', 'text/html');
++      res.setHeader('Content-Type', 'text/html; charset=utf-8');
++      if (req.query.download) {
++        // Offer the lesson as a self-contained, playable .html file.
++        const fileName = (videoTitle || 'lesson').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'lesson';
++        res.setHeader('Content-Disposition', `attachment; filename="${fileName}.html"`);
++      }
+       res.send(htmlContent);
+     } catch (error) {
+       console.error('Error serving video stream:', error);

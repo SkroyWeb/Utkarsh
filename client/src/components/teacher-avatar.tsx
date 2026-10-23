@@ -39,7 +39,7 @@ export default function TeacherAvatar() {
 
         {/* Subtitle hidden on small phones to keep the box size unchanged */}
         <p className="hidden sm:block text-sm lg:text-base text-gray-600 mb-4">
-          Enter any topic and your AI teacher will create a video explanation in
+          Enter any topic and your AI buddy will create a video explanation in
           seconds
         </p>
 

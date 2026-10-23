@@ -19,7 +19,7 @@ export default function FeaturesSection() {
             <span className="material-icons text-primary text-2xl">auto_awesome</span>
           </div>
           <h3 className="font-medium text-lg text-gray-800 mb-2">AI Creates Content</h3>
-          <p className="text-gray-600">Our AI searches the web and generates an educational video explanation.</p>
+          <p className="text-gray-600"> Turns live web intelligence into high-impact visual assets.</p>
         </div>
         
         <div className="bg-white p-6 rounded-xl shadow-md text-center">

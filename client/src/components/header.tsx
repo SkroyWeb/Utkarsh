@@ -33,7 +33,9 @@ function RotatingTagline() {
 
   return (
     <p
-      className={`text-gray-600 mt-2 text-center md:text-left font-medium min-h-[1.75rem] transition-opacity duration-500 ${
+      // md:pl-5 pushes the line in to where the logo's visible edge starts (the logo image has
+      // about 20px of empty space on its left). Nudge it: md:pl-4 = a bit less, md:pl-6 = a bit more.
+      className={`text-gray-600 mt-2 text-center md:text-left md:pl-5 font-medium min-h-[1.75rem] transition-opacity duration-500 ${
         visible ? "opacity-100" : "opacity-0"
       }`}
     >

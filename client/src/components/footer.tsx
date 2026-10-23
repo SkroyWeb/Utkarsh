@@ -21,6 +21,7 @@ const LINK_GROUPS = [
   {
     title: 'Features',
     accent: '#3B82F6',
+    rowOnPhone: false,
     links: [
       { label: 'Video Lessons', href: '#', Icon: Play },
       { label: 'Web Search', href: '#', Icon: Search },
@@ -30,6 +31,7 @@ const LINK_GROUPS = [
   {
     title: 'Support',
     accent: '#2DD4BF',
+    rowOnPhone: false,
     links: [
       { label: 'Help Center', href: '#', Icon: HelpCircle },
       { label: 'Contact', href: '#', Icon: Mail },
@@ -39,6 +41,8 @@ const LINK_GROUPS = [
   {
     title: 'Legal',
     accent: '#8B5CF6',
+    // On small phones Legal takes a full row and its links sit side by side.
+    rowOnPhone: true,
     links: [
       { label: 'Terms', href: '#', Icon: FileText },
       { label: 'Privacy', href: '#', Icon: Shield },
@@ -189,26 +193,26 @@ export default function Footer() {
       </svg>
 
       {/* content, aligned with the rest of the page */}
-      <div className="relative mx-auto max-w-7xl px-4 pb-8 pt-16 md:px-6 lg:px-8">
+      <div className="relative mx-auto max-w-7xl px-4 pb-8 pt-14 md:px-6 lg:px-8">
         {/* corner brackets framing the content */}
         <Corner shape="border-l border-t" className="left-1 top-8 md:left-2" />
         <Corner shape="border-r border-t" className="right-1 top-8 md:right-2" />
         <Corner shape="border-b border-l" className="bottom-3 left-1 md:left-2" />
         <Corner shape="border-b border-r" className="bottom-3 right-1 md:right-2" />
 
-        <div className="grid grid-cols-2 gap-x-10 gap-y-10 px-2 lg:grid-cols-[1.35fr_0.7fr_0.7fr_0.7fr_1.45fr] lg:px-6">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-10 px-2 sm:grid-cols-3 sm:gap-x-8 lg:gap-x-10 lg:grid-cols-[1.35fr_0.7fr_0.7fr_0.7fr_1.45fr] lg:px-6">
           {/* Brand */}
-          <div className="col-span-2 lg:col-span-1">
-            <div className="inline-flex flex-col items-start">
-              <img src={LOGO_ICON} alt="" className="ml-3 h-14 w-14 rounded-2xl object-contain" />
+          <div className="col-span-2 flex flex-col items-center text-center sm:col-span-3 lg:col-span-1 lg:items-start lg:text-left">
+            <div className="inline-flex flex-col items-center lg:items-start">
+              <img src={LOGO_ICON} alt="" className="h-14 w-14 rounded-2xl object-contain lg:ml-3" />
               <span className="mt-2 text-[44px] font-extrabold leading-none tracking-tight text-white">Utkarsh</span>
             </div>
             <p className="mt-4 text-[13px] leading-relaxed text-slate-300">
               Your personal AI Buddy.
               <br />
-              Any topic, instant video lesson.
+              Ask anything, learn everything!
             </p>
-            <div className="mt-5 flex gap-3">
+            <div className="mt-5 flex justify-center gap-3 lg:justify-start">
               {SOCIAL_LINKS.map(({ label, href, Icon }) => {
                 const external = href.startsWith('http');
                 return (
@@ -228,23 +232,33 @@ export default function Footer() {
 
           {/* Links */}
           {LINK_GROUPS.map((group, index) => (
-            <nav key={group.title} aria-label={group.title} className="relative lg:pt-2">
+            <nav
+              key={group.title}
+              aria-label={group.title}
+              className={`relative text-center lg:pt-2 lg:text-left ${group.rowOnPhone ? 'col-span-2 sm:col-span-1' : ''}`}
+            >
               {index === 0 && <Divider />}
               <span
                 aria-hidden="true"
-                className="mb-3 block h-[3px] w-10 rounded-full"
+                className="mx-auto mb-3 block h-[3px] w-10 rounded-full lg:mx-0"
                 style={{ backgroundColor: group.accent, boxShadow: `0 0 10px ${group.accent}99` }}
               />
               <h3 className="text-lg font-semibold text-white">{group.title}</h3>
-              <ul className="mt-5 space-y-4 text-[14px]">
+              <ul
+                className={`mt-5 text-[14px] ${
+                  group.rowOnPhone
+                    ? 'flex flex-wrap justify-center gap-x-6 gap-y-3 sm:mx-auto sm:block sm:w-fit sm:space-y-4 lg:mx-0'
+                    : 'mx-auto w-fit space-y-4 lg:mx-0'
+                }`}
+              >
                 {group.links.map(({ label, href, Icon }) => (
-                  <li key={label}>
+                  <li key={label} className="flex justify-start">
                     <a
                       href={href}
-                      className="group inline-flex items-center gap-3 text-[#B9C8EA] transition hover:text-white"
+                      className="group inline-flex items-start gap-2.5 text-[#B9C8EA] transition hover:text-white sm:gap-3"
                     >
-                      <Icon className="h-5 w-5 text-[#7FA8F5] transition group-hover:text-white" strokeWidth={1.75} />
-                      {label}
+                      <Icon className="h-5 w-5 shrink-0 text-[#7FA8F5] transition group-hover:text-white" strokeWidth={1.75} />
+                      <span className="leading-5">{label}</span>
                     </a>
                   </li>
                 ))}
@@ -253,7 +267,7 @@ export default function Footer() {
           ))}
 
           {/* Newsletter */}
-          <div className="relative col-span-2 lg:col-span-1">
+          <div className="relative col-span-2 mx-auto w-full max-w-2xl sm:col-span-3 lg:col-span-1 lg:max-w-none">
             <Divider />
             <StudyTipsCard />
           </div>
